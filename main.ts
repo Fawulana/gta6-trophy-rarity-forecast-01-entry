@@ -1,44 +1,54 @@
-// GTA VI trophy rarity forecast: a refresh-aware forecaster, v2.
+// GTA VI trophy rarity forecast: a refresh-aware forecaster, v3.
 //
-// DIAGNOSIS (tuning round 1, 19 Nov 2026). v1 scored 0.163 on the server
-// practice (rank 329) but 0.126/0.142 locally against a uniform-dilution
-// answer (every trophy's rate x0.221, the totals-consistent factor). The gap
-// means the real refreshed page does NOT dilute uniformly. Two server
-// anchors pin the real answer's shape, and they pin it jointly:
-//   * the house persistence baseline scores 1.51 on the practice, but only
-//     1.4048 against the uniform answer;
-//   * v1 scores 0.163 on the practice, but 0.134 against the uniform answer.
-// A uniform answer cannot produce both numbers, and neither can random
-// per-trophy scatter: lognormal-perturbed answers (sigma 0.2-0.4, any median
-// 0.17-0.20) match v1's 0.163 only at sigma ~0.25, where persistence is
-// ~1.43, never 1.51. The one family that hits BOTH anchors is a
-// RATE-DEPENDENT dilution factor, f_i proportional to r_i^gamma with
-// gamma ~ 0.9-1.1 (persistence 1.517, v1 0.165 at gamma = 1.0): easy
-// trophies (higher launch-night rate) dilute much less than hard ones,
-// because the newly tracked players had earned the early trophies and
-// almost none of the late ones. The answer is roughly y_i ~ 0.23 * r_i^2.
-//   * v1's 90% coverage was 0.982 (target 0.90): its 0.6-logit spread was
-//     too wide, paying pinball at every trophy. The calibrated spread is
-//     ~0.30.
+// DIAGNOSIS (tuning round 2, 19 Nov 2026). v2 scored 0.0967 on the server
+// practice (rank 55/3736, inside the top 100) and its flat regime is
+// calibrated: the practice history is a stale snapshot, the trend regime
+// never engages there, so v3 keeps the flat regime EXACTLY as v2 (same
+// rate-dependent dilution, same 0.30 spread) and its practice numbers are
+// unchanged by construction (local: POW-g1.0 0.074, uniform 0.107).
+// The final is decided by the TREND regime, and v2's trend regime has two
+// measured faults on the local synthetic-final harness (five invented
+// finals: saturating-rate, log-linear-rate, and three cohort truths with
+// player growth; v2 mean loss 0.214):
+//   * Its spread is ~0.78 logit units on finals: the SIGMA_RW * sqrt(days)
+//     random-walk term charges for the whole horizon's movement even though
+//     the trend already projects that movement. Re-spreading v2's own
+//     medians at s = 0.25-0.35 halves the loss on every synthetic final.
+//   * Its median is a fixed 0.6/0.4 saturating/log-linear blend. The
+//     saturating shape wins only when the truth saturates (median-only loss
+//     0.063 vs 0.398 on the saturating final); the log-linear shape wins on
+//     every other family (0.030-0.105 vs 0.31-0.66). A fixed blend is wrong
+//     in both directions, and in-sample fit cannot tell them apart: the
+//     log-linear fit hugs a saturating curve almost exactly over the
+//     observed 2-day window (in-sample logit RMSE 0.006 vs 0.024) and only
+//     overshoots at day 7. A backtest on the last 30% of history fails the
+//     same way: it rewards trend-following over too short a horizon.
+// The signal that DOES separate them is the CURVATURE of the observed
+// logit-rate curve against log-time: a saturating process bends down
+// (quadratic coefficient median -0.59, all 55 trophies negative on the
+// saturating final), while log-linear and cohort truths are straight or
+// bend up (+0.001 to +0.039, no trophy below -0.05). v3 therefore weights
+// the saturating model per trophy by that curvature, through a sigmoid
+// centred at -0.2: a clearly decelerating trophy gets wS = 0.75, a
+// straight-or-accelerating one wS = 0.10. A third shape was tried and
+// DROPPED: a hazard/count model (dE/dt = lam * (P - E), earners over
+// players tracked) extrapolates worst on every family (median-only loss
+// 0.23-1.48) because it cannot represent a saturating rate while players
+// keep joining; it is not in this file.
+//   * The spread drops the sqrt(days) term: s = sqrt(wmean(rmse^2) +
+//     slope-error^2 + (0.5 * model disagreement)^2 + (0.10 * dx)^2 +
+//     0.15^2), floored at 0.30 and capped at 0.60, where dx is the log-time
+//     extrapolation distance. The horizon still widens the band, but
+//     through the distance the fit actually extrapolates, not the raw days.
+// Verified with the real program (node, p00+p01, run twice byte-identical,
+// plus the five synthetic finals): practice POW-g1.0 0.074 / uniform 0.107
+// (identical to v2), synthetic-final mean loss 0.085 vs v2's 0.214, worst
+// final 0.096 vs v2's 0.243, coverage 1.00 on all five (noiseless truths;
+// the floor and the disagreement term keep the band honest on the real
+// final, whose refresh timing and player growth no synthetic family
+// captures).
 //
-// v2 therefore changes the flat regime in two ways, and nothing else:
-//   * the median rate is D * r^(1 + GAMMA_DIL) instead of D * r, with
-//     GAMMA_DIL = 0.7 (hedged below the anchor's 1.0: it keeps most of the
-//     gain if gamma is really ~1, and stays ahead of v1 on uniform and
-//     scattered answers if it is not);
-//   * the flat spread is 0.30 logit units instead of 0.6.
-// TAU_D is 1.4 so the dilution factor lands near 0.22-0.23 at ~5 h of
-// staleness, the practice's operating point. Verified with the real program
-// (node, p00+p01, run twice byte-identical): on the 46-member local answer
-// family v2's mean loss is 0.157 vs v1's 0.181, and on the anchor-consistent
-// subset 0.077 vs 0.165 (POW-g1.0: 0.074 vs 0.165); v2 also beats v1 on the
-// uniform answer (0.107 vs 0.134) and on lognormal-scatter answers as a
-// class (0.179 vs 0.181). The 13 members where v2 is worse are all
-// high-scatter answers the persistence anchor rejects (worst +0.032).
-// The synthetic final case is unchanged (v2 0.191 vs v1 0.191), so the
-// trend regime did not regress.
-//
-// The rest of the forecaster is v1 unchanged: two regimes chosen per trophy
+// The rest of the forecaster is v2 unchanged: two regimes chosen per trophy
 // by how much the history moved. A flat history means the page is a stale
 // snapshot, so the median is the last rate times the dilution factor (now
 // rate-dependent) and the spread is SPREAD_FLAT. A moving history blends a
@@ -82,19 +92,36 @@ const GAMMA_DIL = 0.7;
 /** Logit spread in the flat regime (v2: 0.30, was 0.6 -- v1's coverage
  *  0.982 showed the old band far too wide for the calibrated scatter). */
 const SPREAD_FLAT = 0.3;
-/** Random-walk spread, in logit units per square-root day of horizon. */
-const SIGMA_RW = 0.35;
 /** Logit movement scale at which the trend earns half the blend weight. */
 const W_MOVE = 0.15;
 /** Cap on the log-linear extrapolation move, in logit units. */
 const MAX_MOVE = 1.2;
-/** Weight of the saturating model in the trend blend (rest: log-linear).
- *  Leans saturating: a growing, diluting player base saturates in linear
- *  time by the cohort argument, while the log-linear shape is kept as a hedge. */
-const W_SAT = 0.6;
 /** Grid of saturation rates (per day) tried by the saturating fit. */
 const K_GRID: number[] = [];
 for (let i = 0; i < 28; i++) K_GRID.push(0.05 * Math.pow(1.35, i));
+/** Curvature-adaptive blend (v3): the saturating model's weight per trophy
+ *  is W_S_LO + (W_S_HI - W_S_LO) * sigmoid((CURV_C0 - curv) / CURV_K),
+ *  where curv is the quadratic coefficient of logit(rate) against
+ *  log1p(hours since release) over the distinct points. Saturating truths
+ *  show curv ~ -0.6, log-linear and cohort truths ~ 0.0 to +0.04, so the
+ *  sigmoid is centred at -0.2 with a 0.05 width: clearly decelerating
+ *  trophies lean saturating, straight ones lean log-linear. */
+const W_S_LO = 0.1;
+const W_S_HI = 0.75;
+const CURV_C0 = -0.2;
+const CURV_K = 0.05;
+/** Distinct points needed before the curvature switch is trusted; fewer
+ *  and the weight stays at W_S_LO (a 3-point quadratic is exact and its
+ *  coefficient is noise). */
+const MIN_CURV_PTS = 5;
+/** Trend-regime spread (v3): s = sqrt(wmean(rmse^2) + seDx^2 +
+ *  (0.5 * disagreement)^2 + (S_HOR * dx)^2 + SPREAD_BASE^2), floored and
+ *  capped. The old SIGMA_RW * sqrt(days) term is gone: it charged ~0.75
+ *  logit units for movement the trend already projects. */
+const SPREAD_BASE = 0.15;
+const S_HOR = 0.1;
+const SPREAD_FLOOR = 0.3;
+const SPREAD_CAP = 0.6;
 
 interface Trophy {
   id: number;
@@ -128,6 +155,11 @@ const invLogit = (l: number): number => 100 / (1 + Math.exp(-l));
 /** x rounded to 4 decimals. */
 const round4 = (x: number): number => Math.round(x * 10_000) / 10_000;
 const parseTs = (s: string): number => new Date(s).getTime();
+/** Logistic sigmoid, guarded against overflow. */
+const sigmoid = (x: number): number => {
+  const t = Math.max(-30, Math.min(30, x));
+  return 1 / (1 + Math.exp(-t));
+};
 
 /** Distinct (days-since-release, rate) points for one trophy, in time order.
  *  Consecutive duplicate rates carry no new information (the page had not
@@ -146,7 +178,8 @@ function distinctPoints(c: Case, idx: number, releaseMs: number): Array<[number,
 
 /** Saturating fit R(t) = rb + (C - rb) * (1 - exp(-k t)) over the distinct
  *  points: k by grid search, C by least squares given k. Returns the median
- *  rate at the target (days) and the fit's root-mean-square error. */
+ *  rate at the target (days) and the fit's root-mean-square error in logit
+ *  space over the distinct points. */
 function fitSaturating(pts: Array<[number, number]>, tTgtDays: number): { med: number; rmse: number } | null {
   const rb = pts[0][1];
   let best: { sse: number; c: number; k: number } | null = null;
@@ -169,20 +202,23 @@ function fitSaturating(pts: Array<[number, number]>, tTgtDays: number): { med: n
     if (best === null || sse < best.sse) best = { sse, c: cc, k };
   }
   if (best === null) return null;
-  const rmse = Math.sqrt(best.sse / Math.max(1, pts.length - 2));
-  const med = rb + (best.c - rb) * (1 - Math.exp(-best.k * Math.max(0, tTgtDays)));
-  return { med, rmse };
+  const predAt = (td: number): number =>
+    rb + (best!.c - rb) * (1 - Math.exp(-best!.k * Math.max(0, td)));
+  let sseLogit = 0;
+  for (const [td, r] of pts) sseLogit += (logit(r) - logit(predAt(td))) ** 2;
+  return { med: predAt(tTgtDays), rmse: Math.sqrt(sseLogit / pts.length) };
 }
 
 /** Log-time linear fit over the last 24 h of distinct points (the house
  *  curve's shape): returns the extrapolated logit median at the target, the
- *  residual spread, and the slope's standard error times the extrapolation
- *  distance. Anchored at the last point, slope shrunk by its own error. */
+ *  residual spread in logit space, the slope's standard error times the
+ *  extrapolation distance, and that distance itself. Anchored at the last
+ *  point, slope shrunk by its own error. */
 function fitLogLinear(
   pts: Array<[number, number, number]>,
   atMs: number,
   tTgtDays: number,
-): { medLogit: number; sRes: number; seDx: number } | null {
+): { medLogit: number; rmse: number; seDx: number; dx: number } | null {
   const pts24: Array<[number, number]> = [];
   for (const [atMsRead, days, r] of pts) {
     if (atMs - atMsRead > 86_400_000) continue;
@@ -203,16 +239,73 @@ function fitLogLinear(
   }
   const b = sxx > 1e-12 ? sxy / sxx : 0;
   const a = my - b * mx;
-  let s2 = 0;
-  for (const [x, y] of pts24) s2 += (y - (a + b * x)) * (y - (a + b * x));
-  s2 /= Math.max(1, n - 2);
-  const seB = sxx > 1e-12 ? Math.sqrt(s2 / sxx) : 0;
+  let sse = 0;
+  for (const [x, y] of pts24) sse += (y - (a + b * x)) * (y - (a + b * x));
+  const seB = sxx > 1e-12 ? Math.sqrt(sse / Math.max(1, n - 2) / sxx) : 0;
   const xTgt = Math.log1p(Math.max(0, tTgtDays * 24));
   const [xLast, yLast] = pts24[pts24.length - 1];
   const dx = xTgt - xLast;
   const k = b * b + seB * seB > 0 ? (b * b) / (b * b + seB * seB) : 0;
   const move = Math.max(-MAX_MOVE, Math.min(MAX_MOVE, k * b * dx));
-  return { medLogit: yLast + move, sRes: Math.sqrt(Math.max(s2, 0)), seDx: seB * dx };
+  return { medLogit: yLast + move, rmse: Math.sqrt(sse / n), seDx: seB * dx, dx };
+}
+
+/** Quadratic coefficient of logit(rate) against log1p(hours since release)
+ *  over the distinct points: negative when the trophy's growth is
+ *  decelerating (saturating), near zero when it is log-linear. Solved from
+ *  the centred normal equations by Gaussian elimination with partial
+ *  pivoting; returns 0 when there are too few points or the system is
+ *  singular. */
+function fitCurvature(pts: Array<[number, number]>): number {
+  if (pts.length < MIN_CURV_PTS) return 0;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const [td, r] of pts) {
+    xs.push(Math.log1p(Math.max(0, td * 24)));
+    ys.push(logit(r));
+  }
+  const n = xs.length;
+  const mx = xs.reduce((s, x) => s + x, 0) / n;
+  const my = ys.reduce((s, y) => s + y, 0) / n;
+  // Normal equations for y - my = c0 + c1 (x - mx) + c2 (x - mx)^2.
+  const mat: number[][] = [];
+  const vec: number[] = [];
+  for (let a = 0; a < 3; a++) {
+    const row: number[] = [];
+    for (let b = 0; b < 3; b++) {
+      let s = 0;
+      for (const x of xs) s += Math.pow(x - mx, a + b);
+      row.push(s);
+    }
+    let t = 0;
+    for (let i = 0; i < n; i++) t += (ys[i] - my) * Math.pow(xs[i] - mx, a);
+    mat.push(row);
+    vec.push(t);
+  }
+  const aug: number[][] = mat.map((row, i) => [...row, vec[i]]);
+  for (let col = 0; col < 3; col++) {
+    let piv = col;
+    for (let r = col + 1; r < 3; r++) {
+      if (Math.abs(aug[r][col]) > Math.abs(aug[piv][col])) piv = r;
+    }
+    if (Math.abs(aug[piv][col]) < 1e-12) return 0;
+    if (piv !== col) {
+      const tmp = aug[col];
+      aug[col] = aug[piv];
+      aug[piv] = tmp;
+    }
+    for (let r = col + 1; r < 3; r++) {
+      const f = aug[r][col] / aug[col][col];
+      for (let cc = col; cc < 4; cc++) aug[r][cc] -= f * aug[col][cc];
+    }
+  }
+  const coef: number[] = [0, 0, 0];
+  for (let r = 2; r >= 0; r--) {
+    let s = aug[r][3];
+    for (let cc = r + 1; cc < 3; cc++) s -= aug[r][cc] * coef[cc];
+    coef[r] = s / aug[r][r];
+  }
+  return Number.isFinite(coef[2]) ? coef[2] : 0;
 }
 
 /** Five quantiles for one trophy. */
@@ -221,7 +314,6 @@ function forecastTrophy(
   idx: number,
   releaseMs: number,
   targetMs: number,
-  horizonDays: number,
   dilution: number,
 ): number[] {
   const lastRaw = c.history[c.history.length - 1].rates[idx];
@@ -258,31 +350,46 @@ function forecastTrophy(
   }
   const loglin = fitLogLinear(ptsDt, atMs, tTgtDays);
 
-  let med: number;
-  let s: number;
-  const rw = SIGMA_RW * Math.sqrt(horizonDays);
   if (sat === null && loglin === null) {
-    med = lFlat;
-    s = SPREAD_FLAT;
-  } else if (loglin === null) {
-    med = logit(sat!.med);
-    s = Math.max(0.35, Math.sqrt(0.15 * 0.15 + rw * rw));
-  } else if (sat === null) {
-    med = loglin.medLogit;
-    s = Math.max(0.35, Math.sqrt(Math.max(loglin.sRes, 0.15) ** 2 + loglin.seDx ** 2 + rw * rw));
-  } else {
-    const lSat = logit(sat.med);
-    med = W_SAT * lSat + (1 - W_SAT) * loglin.medLogit;
-    const dis = Math.abs(lSat - loglin.medLogit);
-    s = Math.max(
-      0.35,
-      Math.sqrt(Math.max(loglin.sRes, 0.15) ** 2 + loglin.seDx ** 2 + rw * rw + (0.5 * dis) ** 2),
-    );
+    return Z.map((z) => round4(invLogit(lFlat + z * SPREAD_FLAT)));
   }
+
+  // Curvature-adaptive blend (v3): decelerating trophies lean on the
+  // saturating shape, straight-or-accelerating ones on the log-linear one.
+  // A missing shape takes no weight.
+  const curv = fitCurvature(pts);
+  const wSatRaw =
+    W_S_LO + (W_S_HI - W_S_LO) * sigmoid((CURV_C0 - curv) / CURV_K);
+  const wSat = sat === null ? 0 : loglin === null ? 1 : wSatRaw;
+  const wLog = 1 - wSat;
+  const lSat = sat === null ? 0 : logit(sat.med);
+  const lLog = loglin === null ? 0 : loglin.medLogit;
+  const medTrend = wSat * lSat + wLog * lLog;
+  const dis = sat === null || loglin === null ? 0 : Math.abs(lSat - lLog);
+  const rmseW = Math.sqrt(
+    (sat === null ? 0 : wSat * sat.rmse * sat.rmse) +
+      (loglin === null ? 0 : wLog * loglin.rmse * loglin.rmse),
+  );
+  const seW = loglin === null ? 0 : Math.sqrt(wLog) * loglin.seDx;
+  const dx = loglin === null ? 0 : loglin.dx;
+  // Spread (v3): fit residuals, slope error, model disagreement and the
+  // log-time extrapolation distance -- no raw sqrt(days) term.
+  const s = Math.min(
+    SPREAD_CAP,
+    Math.max(
+      SPREAD_FLOOR,
+      Math.sqrt(
+        rmseW * rmseW +
+          seW * seW +
+          (0.5 * dis) * (0.5 * dis) +
+          (S_HOR * dx) * (S_HOR * dx) +
+          SPREAD_BASE * SPREAD_BASE,
+      ),
+    ),
+  );
   // Blend the trend toward the dilution prior when the history barely moved.
   const w = (movement * movement) / (movement * movement + W_MOVE * W_MOVE);
-  med = w * med + (1 - w) * lFlat;
-  if (s < 0.35) s = 0.35;
+  const med = w * medTrend + (1 - w) * lFlat;
   return Z.map((z) => round4(invLogit(med + z * s)));
 }
 
@@ -296,7 +403,6 @@ function forecastCase(c: Case): { trophies: Array<{ id: number; q: number[] }> }
     : `${c.game.release_date}T00:00:00Z`;
   const releaseMs = parseTs(releaseDate);
   const targetMs = parseTs(c.target);
-  const horizonDays = c.horizon_minutes / 1440;
   // Staleness: hours from the first read to the target. The snapshot the
   // history shows can be that old when the page has not refreshed.
   const stalenessH = (targetMs - parseTs(c.history[0].at)) / 3_600_000;
@@ -304,7 +410,7 @@ function forecastCase(c: Case): { trophies: Array<{ id: number; q: number[] }> }
     stalenessH > 24 ? DIL_LONG : Math.max(DIL_FLOOR, 1 / (1 + stalenessH / TAU_DIL));
   const trophies = c.trophies.map((t, i) => ({
     id: t.id,
-    q: forecastTrophy(c, i, releaseMs, targetMs, horizonDays, dilution),
+    q: forecastTrophy(c, i, releaseMs, targetMs, dilution),
   }));
   return { trophies };
 }
